@@ -1,151 +1,199 @@
 import json
 import logging
+import re
 import threading
-from datetime import datetime
+import time
+
 import paho.mqtt.client as mqtt
 from django.conf import settings
-from django.utils import timezone
+from django.db import close_old_connections
 
 logger = logging.getLogger(__name__)
+
+STATUS_TOPIC = 'helmet/+/status'
+REQUEST_TOPIC = 'helmet/+/request'
+PLACEHOLDER_HOSTS = {'', 'localhost', '127.0.0.1'}
+BROKER_RECHECK_SECONDS = 10
+HELMET_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,50}$')
 
 _mqtt_started = False
 _mqtt_lock = threading.Lock()
 
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        logger.info('Connected to MQTT Broker!')
-        client.subscribe('helmet/+/status')
-        client.subscribe('helmet/+/request')
-    else:
-        logger.error(f'Failed to connect, return code {rc}')
 
-def on_message(client, userdata, msg):
+def _number(data, key, current, cast=float):
     try:
-        topic = msg.topic
-        payload = json.loads(msg.payload.decode())
-        parts = topic.split('/')
-        if len(parts) < 2: return
-        helmet_id = parts[1]
+        return cast(data[key]) if key in data else current
+    except (TypeError, ValueError):
+        return current
 
-        if topic.endswith('/status'):
-            handle_status_update(helmet_id, payload)
-        elif topic.endswith('/request'):
-            handle_request(helmet_id, payload)
-            
-    except Exception as e:
-        logger.error(f'Error processing MQTT message: {e}')
 
-def handle_status_update(helmet_id, data):
-    from .models import Helmet, Rider, Route, GPSPoint, Incident
-    helmet, created = Helmet.objects.get_or_create(helmet_id=helmet_id)
-    
-    # Priority status check
-    active_incident = Incident.objects.filter(helmet=helmet, resolved=False).exists()
-    
-    helmet.is_connected = True
-    helmet.speed = data.get('speed', helmet.speed)
-    helmet.latitude = data.get('lat', helmet.latitude)
-    helmet.longitude = data.get('lon', helmet.longitude)
-    helmet.alcohol_level = data.get('alc', helmet.alcohol_level)
-    helmet.is_worn = data.get('worn', helmet.is_worn)
-    helmet.battery_level = data.get('bat', helmet.battery_level)
-    
-    # Logic for 4 statuses: online/offline/drunk/accident
-    if active_incident:
-        helmet.state = 'Accident'
-    elif helmet.alcohol_level > (getattr(SystemSettings.objects.first(), 'allowed_alcohol_level', 0.5)):
-        helmet.state = 'Drunk'
-    elif helmet.is_connected:
-        helmet.state = 'Online'
-    else:
-        helmet.state = 'Offline'
-    
-    # Overwrite if explicit state sent from MQTT and no accident
-    if 'state' in data and not active_incident and helmet.state != 'Drunk':
-        helmet.state = data['state']
-    
-    # Network metrics from ESP if available
-    helmet.latency_ms = data.get('latency', helmet.latency_ms)
-    helmet.signal_strength = data.get('rssi', helmet.signal_strength)
-    
-    # MPU Tracking
-    helmet.tilt_angle = data.get('tilt', helmet.tilt_angle)
-    helmet.is_strapped = data.get('strapped', helmet.is_strapped)
-    
-    helmet.save()
+def _flag(data, key, current):
+    value = data.get(key, current)
+    return value if isinstance(value, bool) else current
 
-    # Alert Logic: Alcohol
+
+def _alcohol_limit():
     from .models import SystemSettings
     config = SystemSettings.objects.first()
-    limit = config.allowed_alcohol_level if config else 0.5
-    if data.get('alc', 0) > limit:
-        Incident.objects.create(
-            rider=helmet.rider,
-            helmet=helmet,
-            type='ALC',
+    return config.allowed_alcohol_level if config else 0.5
+
+
+def _open_incident(helmet, incident_type):
+    """Create one unresolved incident per helmet and type; repeated readings do not spam alerts."""
+    from .models import Incident
+    if helmet.rider is None:
+        return None
+    existing = Incident.objects.filter(helmet=helmet, type=incident_type, resolved=False).first()
+    if existing:
+        return existing
+    return Incident.objects.create(
+        rider=helmet.rider, helmet=helmet, type=incident_type, latitude=helmet.latitude, longitude=helmet.longitude,
+    )
+
+
+def handle_status_update(helmet_id, data):
+    from .models import GPSPoint, Helmet, Incident, Route
+
+    helmet, _ = Helmet.objects.get_or_create(helmet_id=helmet_id)
+    helmet.is_connected = True
+    helmet.speed = _number(data, 'speed', helmet.speed)
+    helmet.latitude = _number(data, 'lat', helmet.latitude)
+    helmet.longitude = _number(data, 'lon', helmet.longitude)
+    helmet.alcohol_level = _number(data, 'alc', helmet.alcohol_level)
+    helmet.tilt_angle = _number(data, 'tilt', helmet.tilt_angle)
+    helmet.battery_level = _number(data, 'bat', helmet.battery_level, int)
+    helmet.latency_ms = _number(data, 'latency', helmet.latency_ms, int)
+    helmet.signal_strength = _number(data, 'rssi', helmet.signal_strength, int)
+    helmet.is_worn = _flag(data, 'worn', helmet.is_worn)
+    helmet.is_strapped = _flag(data, 'strapped', helmet.is_strapped)
+
+    if data.get('crash') is True:
+        _open_incident(helmet, 'CRASH')
+    if helmet.alcohol_level > _alcohol_limit():
+        _open_incident(helmet, 'ALC')
+
+    # Priority: Accident > Drunk > explicit firmware state > Online
+    if Incident.objects.filter(helmet=helmet, type='CRASH', resolved=False).exists():
+        helmet.state = 'Accident'
+    elif helmet.alcohol_level > _alcohol_limit():
+        helmet.state = 'Drunk'
+    elif isinstance(data.get('state'), str) and data['state'].strip():
+        helmet.state = data['state'].strip()[:20]
+    else:
+        helmet.state = 'Online'
+    # Only telemetry fields: a rider assigned meanwhile on the dashboard must not be overwritten.
+    helmet.save(update_fields=[
+        'is_connected', 'speed', 'latitude', 'longitude', 'alcohol_level', 'tilt_angle', 'battery_level',
+        'latency_ms', 'signal_strength', 'is_worn', 'is_strapped', 'state', 'last_seen',
+    ])
+
+    if helmet.rider and 'lat' in data and 'lon' in data:
+        route = Route.objects.filter(rider=helmet.rider, is_active=True).first() or Route.objects.create(rider=helmet.rider)
+        GPSPoint.objects.create(
+            route=route,
             latitude=helmet.latitude,
-            longitude=helmet.longitude
+            longitude=helmet.longitude,
+            speed=helmet.speed,
+            alcohol_level=helmet.alcohol_level,
+            tilt_angle=helmet.tilt_angle,
         )
+    return helmet
 
-    # GPS History Tracking
-    if helmet.rider:
-        route = Route.objects.filter(rider=helmet.rider, is_active=True).first()
-        if not route:
-            route = Route.objects.create(rider=helmet.rider)
-        
-        if 'lat' in data and 'lon' in data:
-            GPSPoint.objects.create(
-                route=route,
-                latitude=data['lat'],
-                longitude=data['lon'],
-                speed=data.get('speed', 0.0),
-                alcohol_level=data.get('alc', 0.0),
-                tilt_angle=data.get('tilt', 0.0)
-            )
 
-def handle_request(helmet_id, data):
+def settings_payload():
     from .models import SystemSettings
+    config = SystemSettings.objects.first() or SystemSettings.objects.create()
+    return {
+        'allowed_alcohol_level': config.allowed_alcohol_level,
+        'speed_limit': config.speed_limit,
+        'refresh_rate': config.map_refresh_rate_seconds,
+    }
+
+
+def handle_request(client, helmet_id, data):
     if data.get('type') == 'get_settings':
+        client.publish(f'helmet/{helmet_id}/settings', json.dumps(settings_payload()), qos=1)
+
+
+def on_connect(client, userdata, flags, reason_code, properties=None):
+    if reason_code == 0:
+        logger.info('Connected to MQTT broker.')
+        client.subscribe([(STATUS_TOPIC, 1), (REQUEST_TOPIC, 1)])
+    else:
+        logger.error('MQTT connection refused: %s', reason_code)
+
+
+def on_message(client, userdata, msg):
+    close_old_connections()
+    try:
+        parts = msg.topic.split('/')
+        if len(parts) != 3 or not HELMET_ID_PATTERN.match(parts[1]):
+            return
+        payload = json.loads(msg.payload.decode())
+        if not isinstance(payload, dict):
+            return
+        if parts[2] == 'status':
+            handle_status_update(parts[1], payload)
+        elif parts[2] == 'request':
+            handle_request(client, parts[1], payload)
+    except (UnicodeDecodeError, ValueError):
+        logger.warning('Ignoring malformed MQTT payload on %s', msg.topic)
+    except Exception:
+        logger.exception('Error processing MQTT message on %s', msg.topic)
+
+
+def broker_address():
+    """Host and port saved on the Settings page win, unless they are still the defaults."""
+    from .models import SystemSettings
+    host, port = settings.DASHBOARD_MQTT_BROKER_HOST, settings.DASHBOARD_MQTT_BROKER_PORT
+    try:
         config = SystemSettings.objects.first()
-        if not config:
-            config = SystemSettings.objects.create()
-        
-        response = {
-            'allowed_alcohol_level': config.allowed_alcohol_level,
-            'speed_limit': config.speed_limit,
-            'refresh_rate': config.map_refresh_rate_seconds
-        }
-        
-        from .mqtt_commands import publish_custom_topic
-        publish_custom_topic(f'helmet/{helmet_id}/settings', response)
+    except Exception:
+        config = None
+    if config and (config.mqtt_broker_host or '').strip() not in PLACEHOLDER_HOSTS:
+        host, port = config.mqtt_broker_host.strip(), config.mqtt_broker_port or port
+    return host, port
+
+
+def build_client(host):
+    # Persistent session: the broker queues QoS 1 messages (e.g. one-shot crash reports) while the dashboard restarts.
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='django-backend-listener', clean_session=False)
+    # Credentials come from the environment, so only send them to the broker they were configured for.
+    if settings.DASHBOARD_MQTT_USERNAME and host.lower() == settings.DASHBOARD_MQTT_BROKER_HOST.lower():
+        client.username_pw_set(settings.DASHBOARD_MQTT_USERNAME, settings.DASHBOARD_MQTT_PASSWORD)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    return client
+
+
+def run_until_broker_changes(host, port):
+    """Listen on host:port (paho reconnects by itself) until the Settings page points elsewhere."""
+    client = build_client(host)
+    logger.info('Connecting to MQTT at %s:%s', host, port)
+    client.connect(host, int(port), settings.DASHBOARD_MQTT_KEEPALIVE_SECONDS)
+    client.loop_start()
+    try:
+        while True:
+            time.sleep(BROKER_RECHECK_SECONDS)
+            close_old_connections()
+            if broker_address() != (host, port):
+                logger.info('MQTT broker changed, reconnecting.')
+                return
+    finally:
+        client.disconnect()
+        client.loop_stop()
+
 
 def _mqtt_loop():
-    from .models import SystemSettings
-    import time
-    
-    while True: # Outer retry loop
+    while True:
+        host, port = broker_address()
         try:
-            config = SystemSettings.objects.first()
-            if not config:
-                config = SystemSettings.objects.create()
-            host = config.mqtt_broker_host or 'localhost'
-            port = config.mqtt_broker_port or 1883
-        except Exception as e:
-            logger.error(f'Database access error in MQTT loop: {e}')
-            host = 'localhost'
-            port = 1883
+            run_until_broker_changes(host, port)
+            continue
+        except Exception as exc:
+            logger.error('MQTT connection error: %s. Retrying.', exc)
+        time.sleep(settings.DASHBOARD_MQTT_RECONNECT_DELAY_SECONDS)
 
-        client = mqtt.Client(client_id="django-backend-listener", clean_session=False)
-        client.on_connect = on_connect
-        client.on_message = on_message
-
-        try:
-            logger.info(f'Attempting to connect to MQTT at {host}:{port}...')
-            client.connect(host, port, 60)
-            client.loop_forever()
-        except Exception as e:
-            logger.error(f'MQTT Loop Connection Error: {e}. Retrying in 5s...')
-            time.sleep(5) # Wait before retry
 
 def start_mqtt_listener():
     global _mqtt_started
@@ -153,21 +201,5 @@ def start_mqtt_listener():
         if _mqtt_started:
             return
         _mqtt_started = True
-
-    thread = threading.Thread(target=_mqtt_loop, daemon=True)
-    thread.start()
-    logger.info('MQTT Listener thread started.')
-
-def start_mqtt_listener():
-    global _mqtt_started
-    with _mqtt_lock:
-        if _mqtt_started: return
-        _mqtt_started = True
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    try:
-        client.connect('localhost', 1883, 60)
-        client.loop_start()
-    except Exception as e:
-        print(f'MQTT start error: {e}')
+    threading.Thread(target=_mqtt_loop, daemon=True, name='mqtt-listener').start()
+    logger.info('MQTT listener thread started.')

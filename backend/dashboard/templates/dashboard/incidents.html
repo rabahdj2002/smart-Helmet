@@ -30,7 +30,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             var map = L.map('incident-map').setView([{{ selected_incident.latitude }}, {{ selected_incident.longitude }}], 16);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '(c) OpenStreetMap contributors'
             }).addTo(map);
             L.marker([{{ selected_incident.latitude }}, {{ selected_incident.longitude }}]).addTo(map)
