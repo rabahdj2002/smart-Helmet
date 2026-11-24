@@ -232,6 +232,18 @@ class BrokerClientTests(TestCase):
             self.assertIs(client_cls.call_args.kwargs['clean_session'], False)
 
 
+    def test_listener_reconnects_when_broker_setting_changes(self):
+        addresses = iter([('mqtt', 1883), ('mqtt', 1883), ('broker.example.com', 8883)])
+        with patch.object(mqtt_listener, 'build_client') as build, \
+                patch.object(mqtt_listener, 'broker_address', side_effect=lambda: next(addresses)), \
+                patch.object(mqtt_listener.time, 'sleep'):
+            mqtt_listener.run_until_broker_changes('mqtt', 1883)
+        client = build.return_value
+        client.connect.assert_called_once_with('mqtt', 1883, 60)
+        client.disconnect.assert_called_once()
+        client.loop_stop.assert_called_once()
+
+
 class SeedDemoTests(TestCase):
     def test_seed_demo_is_idempotent_and_pages_render(self):
         call_command('seed_demo', stdout=StringIO())

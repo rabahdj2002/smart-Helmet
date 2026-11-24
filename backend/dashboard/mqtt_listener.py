@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 STATUS_TOPIC = 'helmet/+/status'
 REQUEST_TOPIC = 'helmet/+/request'
 PLACEHOLDER_HOSTS = {'', 'localhost', '127.0.0.1'}
+BROKER_RECHECK_SECONDS = 10
 HELMET_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,50}$')
 
 _mqtt_started = False
@@ -165,14 +166,30 @@ def build_client(host):
     return client
 
 
+def run_until_broker_changes(host, port):
+    """Listen on host:port (paho reconnects by itself) until the Settings page points elsewhere."""
+    client = build_client(host)
+    logger.info('Connecting to MQTT at %s:%s', host, port)
+    client.connect(host, int(port), settings.DASHBOARD_MQTT_KEEPALIVE_SECONDS)
+    client.loop_start()
+    try:
+        while True:
+            time.sleep(BROKER_RECHECK_SECONDS)
+            close_old_connections()
+            if broker_address() != (host, port):
+                logger.info('MQTT broker changed, reconnecting.')
+                return
+    finally:
+        client.disconnect()
+        client.loop_stop()
+
+
 def _mqtt_loop():
     while True:
         host, port = broker_address()
-        client = build_client(host)
         try:
-            logger.info('Connecting to MQTT at %s:%s', host, port)
-            client.connect(host, int(port), settings.DASHBOARD_MQTT_KEEPALIVE_SECONDS)
-            client.loop_forever()
+            run_until_broker_changes(host, port)
+            continue
         except Exception as exc:
             logger.error('MQTT connection error: %s. Retrying.', exc)
         time.sleep(settings.DASHBOARD_MQTT_RECONNECT_DELAY_SECONDS)
