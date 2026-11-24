@@ -229,6 +229,7 @@ class BrokerClientTests(TestCase):
             client_cls.reset_mock()
             mqtt_listener.build_client('attacker.example.com')
             client_cls.return_value.username_pw_set.assert_not_called()
+            self.assertIs(client_cls.call_args.kwargs['clean_session'], False)
 
 
 class SeedDemoTests(TestCase):
