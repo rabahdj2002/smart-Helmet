@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.db.models import Avg, Max, Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -156,6 +157,9 @@ def mqtt_docs(request):
 
 @login_required
 def system_settings(request):
+    # The broker and safety thresholds decide which telemetry is trusted, so only staff may change them.
+    if not request.user.is_staff:
+        raise PermissionDenied
     settings_obj, _ = SystemSettings.objects.get_or_create(id=1)
     errors = []
     if request.method == 'POST':

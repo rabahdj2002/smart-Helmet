@@ -132,6 +132,13 @@ class FormTests(AuthenticatedTestCase):
         self.assertRedirects(self.client.post(reverse('settings'), {'platform_name': 'HALO'}), reverse('settings'))
         self.assertEqual(SystemSettings.objects.get(id=1).map_refresh_rate_seconds, 5)
 
+    def test_settings_are_staff_only(self):
+        user = get_user_model().objects.create_user('viewer', password='pw-12345')
+        self.client.force_login(user)
+        self.assertEqual(self.client.get(reverse('settings')).status_code, 403)
+        self.assertEqual(self.client.post(reverse('settings'), {'mqtt_broker_host': 'evil.example.com'}).status_code, 403)
+        self.assertFalse(SystemSettings.objects.filter(mqtt_broker_host='evil.example.com').exists())
+
     def test_toggle_incident(self):
         incident = Incident.objects.create(rider=self.rider, helmet=self.helmet, type='ALC', latitude=1, longitude=2)
         self.client.post(reverse('incidents'), {'toggle_id': incident.id})
