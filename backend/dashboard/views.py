@@ -9,6 +9,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import GPSPoint, Helmet, Incident, Rider, Route, SystemSettings
+from .mqtt_listener import HELMET_ID_PATTERN
 
 
 def mark_stale_helmets_offline():
@@ -194,6 +195,8 @@ def add_rider(request):
         form = {key: request.POST.get(key, '').strip() for key in ('name', 'email', 'helmet_id')}
         if not all(form.values()):
             errors.append('Name, email and helmet ID are required.')
+        elif not HELMET_ID_PATTERN.match(form['helmet_id']):
+            errors.append('Helmet ID may only contain letters, digits, "-" and "_" (max 50), as it is used in MQTT topics.')
         if form['email'] and Rider.objects.filter(email__iexact=form['email']).exists():
             errors.append('A rider with this email already exists.')
         if form['helmet_id'] and (

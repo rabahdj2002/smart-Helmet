@@ -104,6 +104,7 @@ class FormTests(AuthenticatedTestCase):
             {'name': 'X', 'email': 'KARIM@example.com', 'helmet_id': 'H5'},
             {'name': 'X', 'email': 'x@example.com', 'helmet_id': 'H1'},
             {'name': '', 'email': '', 'helmet_id': ''},
+            {'name': 'X', 'email': 'y@example.com', 'helmet_id': 'helmet.01'},
         ]
         for data in cases:
             with self.subTest(data=data):
