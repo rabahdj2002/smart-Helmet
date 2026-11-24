@@ -166,6 +166,13 @@ class MqttIngestionTests(TestCase):
         self.assertEqual(Incident.objects.filter(type='ALC', resolved=False).count(), 1)
         self.assertEqual(Helmet.objects.get(pk='H1').state, 'Drunk')
 
+    def test_reopened_duplicate_alerts_do_not_block_telemetry(self):
+        for _ in range(2):
+            Incident.objects.create(rider=self.rider, helmet=self.helmet, type='ALC', latitude=0, longitude=0)
+        mqtt_listener.handle_status_update('H1', {'alc': 0.8, 'lat': 5, 'lon': 6})
+        self.assertEqual(Helmet.objects.get(pk='H1').latitude, 5)
+        self.assertEqual(Incident.objects.filter(type='ALC').count(), 2)
+
     def test_crash_has_priority_until_resolved(self):
         mqtt_listener.handle_status_update('H1', {'crash': True, 'alc': 0.8})
         self.assertEqual(Helmet.objects.get(pk='H1').state, 'Accident')

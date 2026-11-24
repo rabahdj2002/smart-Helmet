@@ -42,13 +42,12 @@ def _open_incident(helmet, incident_type):
     from .models import Incident
     if helmet.rider is None:
         return None
-    incident, _ = Incident.objects.get_or_create(
-        helmet=helmet,
-        type=incident_type,
-        resolved=False,
-        defaults={'rider': helmet.rider, 'latitude': helmet.latitude, 'longitude': helmet.longitude},
+    existing = Incident.objects.filter(helmet=helmet, type=incident_type, resolved=False).first()
+    if existing:
+        return existing
+    return Incident.objects.create(
+        rider=helmet.rider, helmet=helmet, type=incident_type, latitude=helmet.latitude, longitude=helmet.longitude,
     )
-    return incident
 
 
 def handle_status_update(helmet_id, data):
