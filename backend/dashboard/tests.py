@@ -155,6 +155,18 @@ class MqttIngestionTests(TestCase):
         self.assertEqual((helmet.latitude, helmet.state, helmet.is_connected), (payload['lat'], 'Online', True))
         self.assertEqual(GPSPoint.objects.filter(route__rider=self.rider).count(), 1)
 
+    def test_telemetry_does_not_overwrite_rider_assigned_meanwhile(self):
+        stale = Helmet.objects.create(helmet_id='H7')
+        newcomer = Rider.objects.create(name='Amel', email='amel@example.com', bike_id='H7')
+        Helmet.objects.filter(pk='H7').update(rider=newcomer)
+        original_get_or_create = Helmet.objects.get_or_create
+        Helmet.objects.get_or_create = lambda **kwargs: (stale, False)
+        try:
+            mqtt_listener.handle_status_update('H7', {'lat': 1, 'lon': 2})
+        finally:
+            Helmet.objects.get_or_create = original_get_or_create
+        self.assertEqual(Helmet.objects.get(pk='H7').rider, newcomer)
+
     def test_unknown_helmet_is_registered_without_rider(self):
         mqtt_listener.handle_status_update('NEW', {'alc': 0.9, 'crash': True})
         self.assertEqual(Helmet.objects.get(pk='NEW').state, 'Drunk')

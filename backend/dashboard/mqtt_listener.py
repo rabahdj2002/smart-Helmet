@@ -80,7 +80,11 @@ def handle_status_update(helmet_id, data):
         helmet.state = data['state'].strip()[:20]
     else:
         helmet.state = 'Online'
-    helmet.save()
+    # Only telemetry fields: a rider assigned meanwhile on the dashboard must not be overwritten.
+    helmet.save(update_fields=[
+        'is_connected', 'speed', 'latitude', 'longitude', 'alcohol_level', 'tilt_angle', 'battery_level',
+        'latency_ms', 'signal_strength', 'is_worn', 'is_strapped', 'state', 'last_seen',
+    ])
 
     if helmet.rider and 'lat' in data and 'lon' in data:
         route = Route.objects.filter(rider=helmet.rider, is_active=True).first() or Route.objects.create(rider=helmet.rider)
