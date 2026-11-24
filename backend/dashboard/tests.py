@@ -177,11 +177,13 @@ class MqttIngestionTests(TestCase):
         client = MagicMock()
         for topic, payload in [
             ('helmet/H1/status', b'not json'), ('helmet/H1/status', b'[1, 2]'), ('helmet', b'{}'),
+            ('helmet/<img src=x onerror=alert(1)>/status', {'lat': 1}),
             ('helmet/H1/status', {'lat': 'north', 'bat': None, 'worn': 'yes'}),
         ]:
             mqtt_listener.on_message(client, None, self._message(topic, payload))
         helmet = Helmet.objects.get(pk='H1')
         self.assertEqual((helmet.latitude, helmet.battery_level, helmet.is_worn), (0.0, 100, False))
+        self.assertEqual(Helmet.objects.count(), 1)
 
     def test_settings_request_publishes_response(self):
         SystemSettings.objects.create(id=1, allowed_alcohol_level=0.4, speed_limit=20, map_refresh_rate_seconds=7)

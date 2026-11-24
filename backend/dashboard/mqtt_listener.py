@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import threading
 import time
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 STATUS_TOPIC = 'helmet/+/status'
 REQUEST_TOPIC = 'helmet/+/request'
 PLACEHOLDER_HOSTS = {'', 'localhost', '127.0.0.1'}
+HELMET_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,50}$')
 
 _mqtt_started = False
 _mqtt_lock = threading.Lock()
@@ -121,7 +123,7 @@ def on_message(client, userdata, msg):
     close_old_connections()
     try:
         parts = msg.topic.split('/')
-        if len(parts) != 3 or not parts[1]:
+        if len(parts) != 3 or not HELMET_ID_PATTERN.match(parts[1]):
             return
         payload = json.loads(msg.payload.decode())
         if not isinstance(payload, dict):

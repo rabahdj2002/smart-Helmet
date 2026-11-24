@@ -108,6 +108,10 @@
     }).addTo(map);
 
     var markers = {};
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+    }
     var mapStatus = document.getElementById('map-status');
 
     function updateLiveData() {
@@ -142,23 +146,24 @@
                     var lat = helmet.lat;
                     var lng = helmet.lon;
                     var id = helmet.id;
-                    var rider = helmet.rider;
-                    var speed = helmet.speed || 0;
-                    var alc = helmet.alc || 0;
+                    var rider = escapeHtml(helmet.rider);
+                    var safeId = escapeHtml(id);
+                    var speed = Number(helmet.speed) || 0;
+                    var alc = Number(helmet.alc) || 0;
                     var conn = helmet.is_connected;
 
                     if (lat && lng) {
                         var popupText = `
                             <div style="min-width: 150px;">
                                 <h4 style="margin:0 0 5px; font-size:14px;">${rider}</h4>
-                                <div style="font-size:11px; color:#666; margin-bottom:8px;">ID: ${id}</div>
+                                <div style="font-size:11px; color:#666; margin-bottom:8px;">ID: ${safeId}</div>
                                 <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                                     <span>Speed:</span><b>${speed} km/h</b>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                                     <span>Alcohol:</span><b style="color:${alc > 0.05 ? 'red' : 'green'}">${alc} mg/L</b>
                                 </div>
-                                <a href="/riders/${helmet.rider_id}/" style="display:block; text-align:center; padding:5px; background:#000; color:#fff; border-radius:4px; text-decoration:none; font-size:10px;">Full Profile</a>
+                                <a href="/riders/${Number(helmet.rider_id)}/" style="display:block; text-align:center; padding:5px; background:#000; color:#fff; border-radius:4px; text-decoration:none; font-size:10px;">Full Profile</a>
                             </div>
                         `;
                         
