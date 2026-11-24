@@ -1,9 +1,9 @@
-from .models import SystemSettings, Incident
+from .models import Helmet, Incident, SystemSettings
+
 
 def app_settings(request):
-    settings = SystemSettings.objects.first()
-    critical_incidents_count = Incident.objects.filter(resolved=False).count()
     return {
-        'app_settings': settings,
-        'global_critical_incidents': critical_incidents_count
+        'app_settings': SystemSettings.objects.first(),
+        'global_critical_incidents': Incident.objects.filter(resolved=False).count(),
+        'connected_helmets': Helmet.objects.filter(is_connected=True).count(),
     }

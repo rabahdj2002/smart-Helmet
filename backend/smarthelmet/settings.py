@@ -21,19 +21,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-fz7kv8db871e4cjx_jk-*mn4hbrnpf#fgcv4e2@$hpco2xuwly'
+def _env_list(name, default=''):
+    return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+def _env_bool(name, default):
+    return os.getenv(name, str(default)).strip().lower() in {'1', 'true', 'yes', 'on'}
 
-# CSRF & Security for Subdomains
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.cloudflare.com',
-    'https://*.pages.dev',
-]
-# If you know your final domain, add it here like: 'https://helmet.yourdomain.com'
+
+# Development-only fallback; always set DJANGO_SECRET_KEY in production.
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-dev-only-change-me')
+
+DEBUG = _env_bool('DJANGO_DEBUG', True)
+
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', '*')
+
+# OpenStreetMap tiles are refused without a Referer header, so send the origin cross-site.
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
+# Add your public domain, e.g. https://helmet.yourdomain.com
+CSRF_TRUSTED_ORIGINS = _env_list('DJANGO_CSRF_TRUSTED_ORIGINS', 'https://*.cloudflare.com,https://*.pages.dev')
 
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = '/static/'
@@ -54,6 +61,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -90,7 +98,7 @@ WSGI_APPLICATION = 'smarthelmet.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.getenv('DJANGO_SQLITE_PATH', str(BASE_DIR / 'db.sqlite3')),
     }
 }
 
@@ -130,35 +138,19 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-ALLOWED_HOSTS = ['*', '192.168.70.25']
-LOGIN_URL = '/login/'
-LOGIN_REDIRECT_URL = '/'
 
-# Runtime mode: set SMARTHELMET_MODE=test|production
-SMARTHELMET_MODE = os.getenv('SMARTHELMET_MODE', 'test').strip().lower()
-IS_TEST_MODE = SMARTHELMET_MODE == 'test'
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'dashboard'
+LOGOUT_REDIRECT_URL = 'login'
 
-# Internal auto-finish scheduler runs inside Django process (no external cron required).
-DASHBOARD_INTERNAL_SCHEDULER_ENABLED = True
-DASHBOARD_INTERNAL_SCHEDULER_POLL_SECONDS = 20
-
-# MQTT listener runs inside Django in background for real-time ESP events.
-DASHBOARD_MQTT_ENABLED = True
-DASHBOARD_MQTT_BROKER_HOST = os.getenv(
-    'DASHBOARD_MQTT_BROKER_HOST',
-    '127.0.0.1' if IS_TEST_MODE else '192.168.70.25',
-)
+# MQTT listener runs inside the Django process for real-time helmet telemetry.
+DASHBOARD_MQTT_ENABLED = _env_bool('DASHBOARD_MQTT_ENABLED', True)
+DASHBOARD_MQTT_BROKER_HOST = os.getenv('DASHBOARD_MQTT_BROKER_HOST', '127.0.0.1')
 DASHBOARD_MQTT_BROKER_PORT = int(os.getenv('DASHBOARD_MQTT_BROKER_PORT', '1883'))
-DASHBOARD_MQTT_TOPIC = os.getenv('DASHBOARD_MQTT_TOPIC', 'smarthelmet/#')
 DASHBOARD_MQTT_USERNAME = os.getenv('DASHBOARD_MQTT_USERNAME', '')
 DASHBOARD_MQTT_PASSWORD = os.getenv('DASHBOARD_MQTT_PASSWORD', '')
 DASHBOARD_MQTT_KEEPALIVE_SECONDS = int(os.getenv('DASHBOARD_MQTT_KEEPALIVE_SECONDS', '60'))
 DASHBOARD_MQTT_RECONNECT_DELAY_SECONDS = int(os.getenv('DASHBOARD_MQTT_RECONNECT_DELAY_SECONDS', '3'))
 
-LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'dashboard'
-LOGOUT_REDIRECT_URL = 'login'
-
-LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'dashboard'
-LOGOUT_REDIRECT_URL = 'login'
+# A helmet that has not reported for this long is shown as offline.
+HELMET_OFFLINE_AFTER_SECONDS = int(os.getenv('HELMET_OFFLINE_AFTER_SECONDS', '30'))

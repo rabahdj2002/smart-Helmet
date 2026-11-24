@@ -1,13 +1,40 @@
-from django.shortcuts import render, redirect
+from datetime import timedelta
+
 from django.conf import settings
-from django.http import JsonResponse
-from .models import Rider, Helmet, Route, GPSPoint, SystemSettings, Incident, MaintenanceLog
-import json
-from django.db.models import Count, Q, Avg, Max
 from django.contrib.auth.decorators import login_required
+from django.db.models import Avg, Max, Q
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
+
+from .models import GPSPoint, Helmet, Incident, Rider, Route, SystemSettings
+
+
+def mark_stale_helmets_offline():
+    cutoff = timezone.now() - timedelta(seconds=settings.HELMET_OFFLINE_AFTER_SECONDS)
+    Helmet.objects.filter(is_connected=True, last_seen__lt=cutoff).update(is_connected=False, state='Offline')
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _number(raw, cast, default, minimum=None):
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        return default, False
+    if minimum is not None and value < minimum:
+        return default, False
+    return value, True
 
 @login_required
 def dashboard(request):
+    mark_stale_helmets_offline()
     total_helmets = Helmet.objects.count()
     connected_helmets = Helmet.objects.filter(is_connected=True).count()
     active_riders = Rider.objects.filter(helmet__is_connected=True).count()
@@ -42,26 +69,20 @@ def dashboard(request):
 def incidents_list(request):
     incident_id = request.GET.get('id')
     if request.method == 'POST' and 'toggle_id' in request.POST:
-        from django.shortcuts import get_object_or_404
-        inc = get_object_or_404(Incident, id=request.POST.get('toggle_id'))
+        inc = get_object_or_404(Incident, id=_int_or_none(request.POST.get('toggle_id')))
         inc.resolved = not inc.resolved
         inc.save()
-        return redirect('incidents')
-        
-    incidents = Incident.objects.all().order_by('-timestamp')
+        return redirect(f"{reverse('incidents')}?id={inc.id}")
+
+    incidents = Incident.objects.select_related('rider', 'helmet').order_by('-timestamp')
     selected_incident = None
-    if incident_id:
-        selected_incident = Incident.objects.filter(id=incident_id).first()
+    if _int_or_none(incident_id) is not None:
+        selected_incident = Incident.objects.filter(id=int(incident_id)).first()
         
     return render(request, 'dashboard/incidents.html', {
         'incidents': incidents,
         'selected_incident': selected_incident
     })
-
-@login_required
-def maintenance_list(request):
-    logs = MaintenanceLog.objects.all().order_by('-date')
-    return render(request, 'dashboard/maintenance.html', {'logs': logs})
 
 @login_required
 def riders_list(request):
@@ -77,17 +98,18 @@ def riders_list(request):
 
 @login_required
 def rider_detail(request, rider_id):
-    from django.shortcuts import get_object_or_404
     rider = get_object_or_404(Rider, id=rider_id)
     routes = Route.objects.filter(rider=rider).order_by('-start_time')
     return render(request, 'dashboard/rider_detail.html', {'rider': rider, 'routes': routes})
 
+@login_required
 def live_data(request):
+    mark_stale_helmets_offline()
     rider_id = request.GET.get('rider_id')
     if rider_id:
-        helmets = Helmet.objects.filter(rider_id=rider_id)
+        helmets = Helmet.objects.select_related('rider').filter(rider_id=_int_or_none(rider_id))
     else:
-        helmets = Helmet.objects.all() # In production maybe filter by connected
+        helmets = Helmet.objects.select_related('rider')
     
     data = []
     for h in helmets:
@@ -110,6 +132,7 @@ def live_data(request):
         data.append({
             'id': h.helmet_id,
             'rider': h.rider.name if h.rider else 'Unassigned',
+            'rider_id': h.rider_id,
             'lat': h.latitude,
             'lon': h.longitude,
             'speed': h.speed,
@@ -132,34 +155,56 @@ def mqtt_docs(request):
 
 @login_required
 def system_settings(request):
-    settings_obj, created = SystemSettings.objects.get_or_create(id=1)
+    settings_obj, _ = SystemSettings.objects.get_or_create(id=1)
+    errors = []
     if request.method == 'POST':
-        settings_obj.platform_name = request.POST.get('platform_name', 'HeisenHelmet')
-        settings_obj.mqtt_broker_host = request.POST.get('mqtt_broker_host')
-        settings_obj.mqtt_broker_port = request.POST.get('mqtt_broker_port') or 1883
-        settings_obj.mqtt_topic_helmet_status = request.POST.get('mqtt_topic_helmet_status')
-        settings_obj.mqtt_topic_helmet_command = request.POST.get('mqtt_topic_helmet_command')
-        settings_obj.mqtt_websocket_host = request.POST.get('mqtt_websocket_host', '')
-        settings_obj.mqtt_websocket_port = request.POST.get('mqtt_websocket_port') or 443
-        settings_obj.mqtt_use_ssl = request.POST.get('mqtt_use_ssl') == 'on'
-        settings_obj.map_refresh_rate_seconds = request.POST.get('map_refresh_rate_seconds')
-        settings_obj.allowed_alcohol_level = request.POST.get('allowed_alcohol_level')
-        settings_obj.speed_limit = request.POST.get('speed_limit') or 60.0
-        settings_obj.save()
-        return redirect('settings')
-    return render(request, 'dashboard/settings.html', {'settings': settings_obj})
+        post = request.POST
+        fields = {
+            'mqtt_broker_port': (int, 1883, 1),
+            'mqtt_websocket_port': (int, 443, 1),
+            'map_refresh_rate_seconds': (int, 5, 1),
+            'allowed_alcohol_level': (float, 0.5, 0),
+            'speed_limit': (float, 60.0, 0),
+        }
+        for name, (cast, default, minimum) in fields.items():
+            raw = post.get(name, '').strip()
+            if not raw:
+                continue
+            value, ok = _number(raw, cast, default, minimum)
+            if not ok:
+                errors.append(f"{name.replace('_', ' ').capitalize()} must be a number of at least {minimum}.")
+            setattr(settings_obj, name, value)
+        settings_obj.platform_name = post.get('platform_name', '').strip() or 'HeisenHelmet'
+        settings_obj.mqtt_broker_host = post.get('mqtt_broker_host', '').strip() or 'localhost'
+        settings_obj.mqtt_topic_helmet_status = post.get('mqtt_topic_helmet_status', '').strip() or 'helmet/+/status'
+        settings_obj.mqtt_topic_helmet_command = post.get('mqtt_topic_helmet_command', '').strip() or 'helmet/+/command'
+        settings_obj.mqtt_websocket_host = post.get('mqtt_websocket_host', '').strip()
+        settings_obj.mqtt_use_ssl = post.get('mqtt_use_ssl') == 'on'
+        if not errors:
+            settings_obj.save()
+            return redirect('settings')
+    return render(request, 'dashboard/settings.html', {'settings': settings_obj, 'errors': errors}, status=400 if errors else 200)
+
 
 @login_required
 def add_rider(request):
+    errors = []
+    form = {}
     if request.method == 'POST':
-        name = request.POST.get('name')
-        email = request.POST.get('email')
-        # Default bike_id to helmet_id if not provided, or simply use helmet_id as fleet identifier
-        helmet_id = request.POST.get('helmet_id')
-        bike_id = helmet_id # Since we removed it from the form
-        
-        rider = Rider.objects.create(name=name, email=email, bike_id=bike_id)
-        Helmet.objects.get_or_create(helmet_id=helmet_id, defaults={'rider': rider})
-        
-        return redirect('riders')
-    return render(request, 'dashboard/add_rider.html')
+        form = {key: request.POST.get(key, '').strip() for key in ('name', 'email', 'helmet_id')}
+        if not all(form.values()):
+            errors.append('Name, email and helmet ID are required.')
+        if form['email'] and Rider.objects.filter(email__iexact=form['email']).exists():
+            errors.append('A rider with this email already exists.')
+        if form['helmet_id'] and (
+            Rider.objects.filter(bike_id=form['helmet_id']).exists()
+            or Helmet.objects.filter(helmet_id=form['helmet_id'], rider__isnull=False).exists()
+        ):
+            errors.append('This helmet is already assigned to a rider.')
+        if not errors:
+            rider = Rider.objects.create(name=form['name'], email=form['email'], bike_id=form['helmet_id'])
+            helmet, _ = Helmet.objects.get_or_create(helmet_id=form['helmet_id'])
+            helmet.rider = rider
+            helmet.save(update_fields=['rider'])
+            return redirect('riders')
+    return render(request, 'dashboard/add_rider.html', {'errors': errors, 'form': form}, status=400 if errors else 200)

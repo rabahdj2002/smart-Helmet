@@ -56,7 +56,7 @@
     var lon = {{ rider.helmet.longitude|default:0 }};
     
     var map = L.map('rider-map').setView([lat, lon], (lat === 0 ? 2 : 16));
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '(c) HeisenHelmet Contributors'
     }).addTo(map);
     
