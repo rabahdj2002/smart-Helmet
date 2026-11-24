@@ -159,7 +159,7 @@ def build_client(host):
     # Persistent session: the broker queues QoS 1 messages (e.g. one-shot crash reports) while the dashboard restarts.
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='django-backend-listener', clean_session=False)
     # Credentials come from the environment, so only send them to the broker they were configured for.
-    if settings.DASHBOARD_MQTT_USERNAME and host == settings.DASHBOARD_MQTT_BROKER_HOST:
+    if settings.DASHBOARD_MQTT_USERNAME and host.lower() == settings.DASHBOARD_MQTT_BROKER_HOST.lower():
         client.username_pw_set(settings.DASHBOARD_MQTT_USERNAME, settings.DASHBOARD_MQTT_PASSWORD)
     client.on_connect = on_connect
     client.on_message = on_message

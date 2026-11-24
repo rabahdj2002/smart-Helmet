@@ -225,7 +225,7 @@ class MqttIngestionTests(TestCase):
 class BrokerClientTests(TestCase):
     def test_credentials_only_sent_to_configured_broker(self):
         with patch.object(mqtt_listener.mqtt, 'Client') as client_cls:
-            mqtt_listener.build_client('mqtt')
+            mqtt_listener.build_client('MQTT')
             client_cls.return_value.username_pw_set.assert_called_once_with('svc', 'secret')
             client_cls.reset_mock()
             mqtt_listener.build_client('attacker.example.com')
