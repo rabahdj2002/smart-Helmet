@@ -154,14 +154,20 @@ def broker_address():
     return host, port
 
 
+def build_client(host):
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='django-backend-listener')
+    # Credentials come from the environment, so only send them to the broker they were configured for.
+    if settings.DASHBOARD_MQTT_USERNAME and host == settings.DASHBOARD_MQTT_BROKER_HOST:
+        client.username_pw_set(settings.DASHBOARD_MQTT_USERNAME, settings.DASHBOARD_MQTT_PASSWORD)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    return client
+
+
 def _mqtt_loop():
     while True:
         host, port = broker_address()
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='django-backend-listener')
-        if settings.DASHBOARD_MQTT_USERNAME:
-            client.username_pw_set(settings.DASHBOARD_MQTT_USERNAME, settings.DASHBOARD_MQTT_PASSWORD)
-        client.on_connect = on_connect
-        client.on_message = on_message
+        client = build_client(host)
         try:
             logger.info('Connecting to MQTT at %s:%s', host, port)
             client.connect(host, int(port), settings.DASHBOARD_MQTT_KEEPALIVE_SECONDS)

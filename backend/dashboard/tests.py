@@ -1,7 +1,7 @@
 import json
 from datetime import timedelta
 from io import StringIO
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -218,6 +218,17 @@ class MqttIngestionTests(TestCase):
         self.assertEqual(mqtt_listener.broker_address(), ('mqtt', 1883))
         SystemSettings.objects.filter(id=1).update(mqtt_broker_host='broker.example.com', mqtt_broker_port=8883)
         self.assertEqual(mqtt_listener.broker_address(), ('broker.example.com', 8883))
+
+
+@override_settings(DASHBOARD_MQTT_BROKER_HOST='mqtt', DASHBOARD_MQTT_USERNAME='svc', DASHBOARD_MQTT_PASSWORD='secret')
+class BrokerClientTests(TestCase):
+    def test_credentials_only_sent_to_configured_broker(self):
+        with patch.object(mqtt_listener.mqtt, 'Client') as client_cls:
+            mqtt_listener.build_client('mqtt')
+            client_cls.return_value.username_pw_set.assert_called_once_with('svc', 'secret')
+            client_cls.reset_mock()
+            mqtt_listener.build_client('attacker.example.com')
+            client_cls.return_value.username_pw_set.assert_not_called()
 
 
 class SeedDemoTests(TestCase):
